@@ -1,6 +1,9 @@
-streamlit
+streamlit==1.36.0
+numpy==1.26.4
+biotite==0.41.2
+cython==0.29.37
+biopython==1.83
+py3Dmol==2.0.4
 stmol==0.0.9
-py3Dmol
-biotite
 ipywidgets
 ipython_genutils
