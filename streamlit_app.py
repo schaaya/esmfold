@@ -10,6 +10,8 @@ st.sidebar.write(
     '[*ESMFold*](https://esmatlas.com/about) predicts single-sequence protein structures using the ESM-2 language model.'
 )
 
+API_URL = 'https://api.esmatlas.com/foldSequence/v1/pdb/'
+
 def render_mol(pdb_text: str):
     view = py3Dmol.view()
     view.addModel(pdb_text, 'pdb')
