@@ -53,18 +53,27 @@ txt = st.sidebar.text_area('Input sequence', DEFAULT_SEQ, height=275)
 def update(sequence: str = txt):
     try:
         # ESMFold API call
+        # resp = requests.post(
+        #     'https://api.esmatlas.com/foldSequence/v1/pdb/',
+        #     headers={'Content-Type': 'application/x-www-form-urlencoded'},
+        #     data=sequence,
+        #     timeout=60,
+        # )
+        # resp.raise_for_status()
+
         resp = requests.post(
-            'https://api.esmatlas.com/foldSequence/v1/pdb/',
-            headers={'Content-Type': 'application/x-www-form-urlencoded'},
-            data=sequence,
+        API_URL,
+            json={"sequence": sequence},          # <-- JSON payload
+            headers={"Accept": "text/plain"},     # PDB text response
             timeout=60,
-        )
+            )
         resp.raise_for_status()
+        pdb_string = resp.text
     except Exception as e:
         st.error(f"Prediction failed: {e}")
         return
 
-    pdb_string = resp.content.decode('utf-8')
+    # pdb_string = resp.content.decode('utf-8')
 
     # Persist to file (so Biotite can parse)
     with open('predicted.pdb', 'w') as f:
