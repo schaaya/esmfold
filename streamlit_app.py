@@ -2,57 +2,96 @@ import streamlit as st
 from stmol import showmol
 import py3Dmol
 import requests
-import biotite.structure.io as bsio
+import numpy as np
+from biotite.structure.io import pdb as bsio
 
-# Set page configuration and sidebar title and description
 st.sidebar.title('🎈 ESMFold')
-st.sidebar.write('[*ESMFold*](https://esmatlas.com/about) is an end-to-end single sequence protein structure predictor based on the ESM-2 language model. For more information, read the [research article](https://www.biorxiv.org/content/10.1101/2022.07.20.500902v2) and the [news article](https://www.nature.com/articles/d41586-022-03539-1) published in *Nature*.')
+st.sidebar.write(
+    '[*ESMFold*](https://esmatlas.com/about) predicts single-sequence protein structures using the ESM-2 language model.'
+)
 
-# Function to render molecule using stmol and py3Dmol
-def render_mol(pdb):
-    pdbview = py3Dmol.view()
-    pdbview.addModel(pdb,'pdb')
-    pdbview.setStyle({'cartoon':{'color':'spectrum'}})
-    pdbview.setBackgroundColor('white')  # Set background color
-    pdbview.zoomTo()
-    pdbview.zoom(2, 800)
-    pdbview.spin(True)
-    showmol(pdbview, height=500, width=800)
+def render_mol(pdb_text: str):
+    view = py3Dmol.view()
+    view.addModel(pdb_text, 'pdb')
+    view.setStyle({'cartoon': {'color': 'spectrum'}})
+    view.setBackgroundColor('white')
+    view.zoomTo()
+    view.zoom(2, 800)
+    view.spin(True)
+    showmol(view, height=500, width=800)
 
-# Default protein sequence
-DEFAULT_SEQ = "MGSSHHHHHHSSGLVPRGSHMRGPNPTAASLEASAGPFTVRSFTVSRPSGYGAGTVYYPTNAGGTVGAIAIVPGYTARQSSIKWWGPRLASHGFVVITIDTNSTLDQPSSRSSQQMAALRQVASLNGTSSSPIYGKVDTARMGVMGWSMGGGGSLISAANNPSLKAAAPQAPWDSSTNFSSVTVPTLIFACENDSIAPVNSSALPIYDSMSRNAKQFLEINGGSHSCANSGNSNQALIGKKGVAWMKRFMDNDTRYSTFACENPNSTRVSDFRTANCSLEDPAANKARKEAELAAATAEQ"
+# --- robust loader for ESMFold PDBs ---
+def load_pdb_safe(path: str):
+    pdb_file = bsio.PDBFile.read(path)
+    try:
+        # Try default (model=1)
+        arr = pdb_file.get_structure(extra_fields=["b_factor"])
+    except ValueError:
+        # If MODEL records are absent/odd, read all models
+        arr = pdb_file.get_structure(model=None, extra_fields=["b_factor"])
 
-# Input sequence text area in the sidebar
+    # Ensure numeric b_factor exists (ESMFold uses B-factor for pLDDT)
+    cats = arr.get_annotation_categories()
+    if "b_factor" not in cats:
+        arr.add_annotation("b_factor", dtype=float)
+        arr.b_factor[:] = 0.0
+    else:
+        bf = np.asarray(arr.b_factor)
+        arr.b_factor[:] = np.nan_to_num(bf, nan=0.0)
+
+    return arr
+
+DEFAULT_SEQ = (
+    "MGSSHHHHHHSSGLVPRGSHMRGPNPTAASLEASAGPFTVRSFTVSRPSGYGAGTVYYPTNAGGTVGAIAIVPGYTARQSS"
+    "IKWWGPRLASHGFVVITIDTNSTLDQPSSRSSQQMAALRQVASLNGTSSSPIYGKVDTARMGVMGWSMGGGGSLISAANNP"
+    "SLKAAAPQAPWDSSTNFSSVTVPTLIFACENDSIAPVNSSALPIYDSMSRNAKQFLEINGGSHSCANSGNSNQALIGKKGVA"
+    "WMKRFMDNDTRYSTFACENPNSTRVSDFRTANCSLEDPAANKARKEAELAAATAEQ"
+)
+
 txt = st.sidebar.text_area('Input sequence', DEFAULT_SEQ, height=275)
 
-# Function to perform prediction and update the UI
-def update(sequence=txt):
-    headers = {
-        'Content-Type': 'application/x-www-form-urlencoded',
-    }
-    # Make a POST request to the ESMFold API
-    response = requests.post('https://api.esmatlas.com/foldSequence/v1/pdb/', headers=headers, data=sequence, verify=False)
-    name = sequence[:3] + sequence[-3:]  # Generate a name
-    pdb_string = response.content.decode('utf-8')  # Get PDB string from response
+def update(sequence: str = txt):
+    try:
+        # ESMFold API call
+        resp = requests.post(
+            'https://api.esmatlas.com/foldSequence/v1/pdb/',
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            data=sequence,
+            timeout=60,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        st.error(f"Prediction failed: {e}")
+        return
 
-    # Write predicted PDB string to a file
+    pdb_string = resp.content.decode('utf-8')
+
+    # Persist to file (so Biotite can parse)
     with open('predicted.pdb', 'w') as f:
         f.write(pdb_string)
 
-    # Load structure from predicted PDB file and calculate mean B-factor
-    struct = bsio.load_structure('predicted.pdb', extra_fields=["b_factor"])
-    b_value = round(struct.b_factor.mean(), 4)
+    # Load PDB safely and compute mean pLDDT (B-factor)
+    try:
+        struct = load_pdb_safe('predicted.pdb')
+        b_value = round(float(np.mean(struct.b_factor)), 4)
+    except Exception as e:
+        # Fall back if Biotite ever chokes; still show the structure
+        st.warning(f"Could not parse pLDDT from PDB (showing structure anyway). Details: {e}")
+        b_value = None
 
-    # Display protein structure using py3Dmol and stmol
+    # Visualization
     st.subheader('Visualization of predicted protein structure')
     render_mol(pdb_string)
 
-    # Display plDDT value as information
+    # pLDDT panel
     st.subheader('plDDT')
-    st.write('plDDT is a per-residue estimate of the confidence in prediction on a scale from 0-100.')
-    st.info(f'plDDT: {b_value}')
+    st.write('plDDT is a per-residue confidence (0–100). In ESMFold PDBs it is stored in the B-factor column.')
+    if b_value is not None:
+        st.info(f'plDDT (mean): {b_value}')
+    else:
+        st.info('plDDT (mean): unavailable')
 
-    # Download button to download predicted PDB file
+    # Download
     st.download_button(
         label="Download PDB",
         data=pdb_string,
@@ -60,9 +99,8 @@ def update(sequence=txt):
         mime='text/plain',
     )
 
-# Button to trigger prediction when clicked
+# Trigger
 predict = st.sidebar.button('Predict', on_click=update)
 
-# Display a warning message if no protein sequence is entered
 if not predict:
-    st.warning('👈 Enter protein sequence data!')
+    st.warning('👈 Enter protein sequence data and click **Predict**!')
